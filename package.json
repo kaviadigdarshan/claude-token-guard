@@ -9,6 +9,14 @@
     "node": ">=18"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaviadigdarshan/claude-token-guard.git"
+  },
+  "homepage": "https://github.com/kaviadigdarshan/claude-token-guard#readme",
+  "bugs": {
+    "url": "https://github.com/kaviadigdarshan/claude-token-guard/issues"
+  },
   "files": [
     "bin/",
     "src/",
