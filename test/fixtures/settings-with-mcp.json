@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [{"hooks":[{"type":"command","command":".claude/hooks/turn-counter.sh"}]}],
+    "SessionStart": [{"matcher":"startup","hooks":[{"type":"command","command":".claude/hooks/session-start.sh"}]}]
+  },
+  "mcpServers": { "github":{}, "linear":{}, "slack":{}, "notion":{}, "jira":{} }
+}

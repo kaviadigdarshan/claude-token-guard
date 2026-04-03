@@ -1,0 +1,6 @@
+hooks/
+templates/
+CLAUDE.md
+*.sh
+.claude/
+test/

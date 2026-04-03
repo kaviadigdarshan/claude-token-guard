@@ -1,0 +1,19 @@
+{
+  "name": "claude-token-guard",
+  "version": "1.1.0",
+  "description": "Token efficiency auditor and auto-fixer for Claude Code",
+  "bin": {
+    "ctg": "bin/ctg.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "src/",
+    "templates/",
+    "README.md",
+    "METHODOLOGY.md"
+  ]
+}

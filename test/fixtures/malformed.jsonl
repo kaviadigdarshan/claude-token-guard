@@ -1,0 +1,4 @@
+{"type":"assistant","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_input_tokens":0}}
+{"type":"assistant","usage":{"input_tokens":2000,"output_tokens":400,"cache_read_input_tokens":500}}
+{"type":"assistant","usage":{"input_tokens":3000,"output_tokens":600,"cache_read_input_tokens":1000}}
+{"type":"assistant","usage":{"input_tokens":4000,"output_tokens":

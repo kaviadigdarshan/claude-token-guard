@@ -1,0 +1,33 @@
+node_modules/
+.env
+.env.local
+*.log
+.claude/
+.npmrc
+dist/
+coverage/
+*.tgz
+
+# Python virtualenv (visible in your shell prompt)
+.venv/
+venv/
+__pycache__/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CTG runtime files written by monitor.js
+~/.ctg/
+/tmp/ctg-turns-*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# npm pack artifacts
+*.tgz
+package-lock.json
