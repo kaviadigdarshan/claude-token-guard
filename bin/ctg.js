@@ -156,6 +156,8 @@ if (subcommand === 'watch') {
 
 // ── dashboard ─────────────────────────────────────────────────────────────
 if (subcommand === 'dashboard') {
-  console.error(`dashboard: Phase 3 — not yet implemented.`);
-  process.exit(1);
+  const { startDashboard } = require('../src/dashboard');
+  const port = parseInt(process.env.CTG_PORT || '7842');
+  console.log(`Open your browser -> http://localhost:${port}  (Ctrl+C to stop)`);
+  startDashboard({ port, monitorOpts: { dir: targetDir, noHistory: flags.noHistory }, notify: flags.notify });
 }
