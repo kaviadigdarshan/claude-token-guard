@@ -1,57 +1,114 @@
 # claude-token-guard
 
-Token efficiency auditor and auto-fixer for Claude Code.
+> ESLint for your Claude Code setup. Audit anti-patterns, auto-fix them, monitor live.
 
+![ctg audit output](docs/images/audit.png)
 
-## Installation
+If you've ever hit 100% context mid-task with zero idea what caused it — this tool is for you.
 
-```sh
-npx claude-token-guard@latest audit
-# or install globally:
+The community has great tools for tracking **how much** you spend. `claude-token-guard` tells you **why** you're burning tokens and fixes it automatically.
+
+---
+
+## The Problem
+
+One day I went from 69% → 100% context in a single prompt. Just stared at the screen.
+
+I was already using monitoring tools. None of them told me what was misconfigured in my project. After digging through session logs and Claude Code docs I found 10 repeatable anti-patterns that silently drain context every single turn — bad `.claudeignore` entries, file discovery commands baked into `CLAUDE.md`, bloated checklists, no stable-context section. Fixable things. Nobody was linting for them.
+
+So I built `ctg`.
+
+---
+
+## Install
+
+```bash
 npm install -g claude-token-guard
+ctg audit
 ```
 
+---
 
-## Usage
+## Commands
 
-```sh
-ctg audit                  # scan current directory for token anti-patterns
-ctg fix --auto             # apply all fixes automatically
-ctg fix --dry-run          # preview changes without writing
-ctg watch                  # monitor JSONL in real time (Phase 2)
-ctg dashboard              # open SSE browser dashboard (Phase 3)
-```
+### `ctg audit`
+Scans your project against 10 anti-patterns. Tells you what's wrong, exactly where, and estimated token impact.
 
+![ctg audit](docs/images/audit.png)
 
-## Flags
+### `ctg fix --dry-run`
+Preview every change before anything is touched.
 
-| Flag | Description |
-|------|-------------|
-| `--auto` | apply all fixes without prompting |
-| `--dry-run` | preview all changes, write nothing |
-| `--mcp-threshold=N` | P8 server count threshold (default: 3) |
-| `--no-history` | do not write to ~/.ctg/sessions/history.jsonl |
-| `--dir=<path>` | target directory (default: current directory) |
+![ctg fix dry run](docs/images/fix-dry-run.png)
 
+### `ctg fix --auto`
+Auto-fixes what's safe: creates `.claudeignore`, injects a stable-context section into `CLAUDE.md`, installs session hooks, updates settings.
 
-## 10 Token Anti-Patterns Detected
+![ctg fix auto](docs/images/fix-auto.png)
+![claudeignore diff](docs/images/claudeignore-diff.png)
 
-| Pattern | Severity | What it detects |
-|---------|----------|-----------------|
-| P1 | CRITICAL | File discovery commands (cat ~/, grep -r, ls ~/) in .md files |
-| P2 | CRITICAL | No 'resume after rate limit' prevention rule in CLAUDE.md |
-| P3 | HIGH     | Session turn counter hook not installed |
-| P4 | HIGH     | Verbose checklists with 6+ items in Checklist sections |
-| P5 | MEDIUM   | No stable-context section in CLAUDE.md |
-| P6 | MEDIUM   | No /clear discipline rule in CLAUDE.md |
-| P7 | CRITICAL | Missing .claudeignore (node_modules/dist visible to Claude) |
-| P8 | HIGH     | More than 3 MCP servers always connected |
-| P9 | MEDIUM   | CLAUDE.md longer than 150 lines |
-| P10| HIGH     | Correction loop: same instruction sent 3+ times (Phase 2) |
+### `ctg watch`
+Tails your Claude Code JSONL session in real-time. Fires alerts on token spikes and correction loops as they happen.
 
+![ctg watch alongside Claude Code](docs/images/watch-sidebyside.png)
 
-## Token Estimate Methodology
+### `ctg dashboard`
+Live browser UI that updates as you code — token counter, spike alerts, session history, dark/light mode. Keep it on a second monitor the same way you keep logs open.
 
-Estimates are rough: median pattern severity x average occurrences.
-See METHODOLOGY.md for per-pattern sources and formulas.
-Real savings depend on project size, session length, and usage patterns.
+![ctg dashboard](docs/images/dashboard.png)
+
+### `ctg test`
+Run built-in anti-pattern scenarios to validate all 10 detection rules are working correctly.
+
+---
+
+## The 10 Anti-Patterns
+
+| ID | Severity | Pattern | Why It Hurts |
+|---|---|---|---|
+| P1 | CRITICAL | File discovery commands in CLAUDE.md | `grep -r ~/` causes Claude to scan directories every single turn |
+| P2 | CRITICAL | No resume-after-rate-limit rule | Claude restarts context from scratch after rate limits |
+| P3 | HIGH | No session turn counter hook | No guard against runaway sessions |
+| P4 | HIGH | Verbose verification checklists | 6+ item checklists re-read in full every turn |
+| P5 | MEDIUM | No stable-context section | Claude re-discovers your architecture repeatedly |
+| P6 | MEDIUM | No /clear discipline rule | Context bloat across unrelated tasks |
+| P7 | CRITICAL | Incomplete `.claudeignore` | Claude sees node_modules, dist, .git — hundreds of irrelevant files |
+| P8 | HIGH | Always-on MCP servers | Every connected server adds overhead per turn |
+| P9 | MEDIUM | Bloated CLAUDE.md | >150 lines injected into context every turn |
+| P10 | HIGH | Correction loops | Repeating the same ask 5 ways — Claude answers each time |
+
+---
+
+## How It Compares
+
+| Tool | What it does |
+|---|---|
+| `ccusage` | Tracks how much you spent |
+| RTK / session trackers | Tracks session stats |
+| **claude-token-guard** | Audits why you're spending it + fixes it |
+
+Think of the others as monitoring. Think of `ctg` as the linter you run first.
+
+---
+
+## Before / After
+
+After fixing P1, P5, P7 on my main project — sessions started running to completion.
+The audit flagged ~18M tokens/session in estimated waste. Even half that is a lot of prompts burned for nothing.
+
+---
+
+## Roadmap / Contributing
+
+- [ ] VS Code sidebar integration
+- [ ] Team shared config via `.ctgrc`
+- [ ] More anti-pattern rules
+
+Hit a pattern that killed your session? **Open an issue** — I'll add detection for it.
+
+If this saves you tokens, a ⭐ helps more developers find it.
+
+---
+
+## License
+MIT
