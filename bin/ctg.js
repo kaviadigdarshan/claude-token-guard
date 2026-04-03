@@ -5,7 +5,8 @@ const args = process.argv.slice(2);
 
 // --version
 if (args.includes('--version')) {
-  console.log('1.0.0');
+  const { version } = require('../package.json');
+  console.log(version);
   process.exit(0);
 }
 

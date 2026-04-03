@@ -1,6 +1,6 @@
 {
   "name": "claude-token-guard",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Token efficiency auditor and auto-fixer for Claude Code",
   "bin": {
     "ctg": "bin/ctg.js"
