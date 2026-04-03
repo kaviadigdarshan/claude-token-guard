@@ -18,7 +18,7 @@ let _historyLogged = false;
 
 function resolveSessionFile(targetDir) {
   // Claude Code encodes project path by replacing all / with -
-  const encoded = path.resolve(targetDir).replace(/\//g, '-');
+  const encoded = path.resolve(targetDir).replace(/[\/\_]/g, '-');
 
   // Check both new (v1.0.30+) and legacy locations
   const candidates = [
@@ -101,8 +101,23 @@ function appendHistory(record, noHistory) {
  * @param {number} [opts.mcpThreshold]  Override default P8 threshold (3)
  * @returns {{ stop: Function, getStats: Function }}
  */
+function getMostRecentSessionFile(projectDir) {
+  const encoded = path.resolve(projectDir).replace(/[\/\_]/g, '-');
+  const sessionDir = path.join(os.homedir(), '.claude', 'projects', encoded);
+  try {
+    const files = fs.readdirSync(sessionDir)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('agent'))
+      .map(f => ({
+        file: path.join(sessionDir, f),
+        mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    return files[0]?.file || null;
+  } catch(e) { return null; }
+}
+
 function startMonitor(opts = {}) {
-  const sessionFile = opts.sessionFile || resolveSessionFile(opts.dir || process.cwd());
+  let sessionFile = opts.sessionFile || resolveSessionFile(opts.dir || process.cwd());
   if (!sessionFile) {
     console.error('CTG: No Claude Code session found for', opts.dir || process.cwd());
     console.error('CTG: Start a Claude Code session first, or set CTG_TRANSCRIPT_PATH=<path>');
@@ -118,6 +133,7 @@ function startMonitor(opts = {}) {
   const userMsgWindow = []; // last P10_WINDOW_SIZE normalized user messages
   let spikesDetected = 0;
   let correctionLoopsDetected = 0;
+  let lastMilestoneReported = 0;
 
   // For getP8RefinedResult
   const recentToolUseServers = new Set();
@@ -134,26 +150,38 @@ function startMonitor(opts = {}) {
     const ts = Date.now();
 
     // ── Token accounting ──────────────────────────────────────────────
-    const usage = line.usage || {};
-    const t =
-      (usage.input_tokens || 0) +
-      (usage.output_tokens || 0) +
-      (usage.cache_read_input_tokens || 0);
+    const u = line.message?.usage || {};
+    const t = (u.input_tokens||0) + (u.output_tokens||0)
+            + (u.cache_read_input_tokens||0)
+            + (u.cache_creation_input_tokens||0);
     tokensThisTurn += t;
     sessionTotal += t;
 
+    // FIX 3 — Per-turn token display
+    if (t > 0) {
+	const rawModel = line.message?.model?.replace('claude-', '') || 'unknown';
+	const model = rawModel.replace(/-(\d+)-(\d+)$/, '-$1.$2');
+      console.log(`[TURN] +${(t/1000).toFixed(1)}k tokens (${model}) | session total: ${(sessionTotal/1000).toFixed(1)}k`);
+      opts.onSpike?.({
+        rule: 0,
+        type: 'turn',
+        tokens: t,
+        sessionTotal,
+        turnCount,
+        model,
+        timestamp: Date.now()
+      });
+    }
+
     // ── Rule 5 — P1 live detection ────────────────────────────────────
-    const cmd = line.tool_input && line.tool_input.command;
-    if (typeof cmd === "string" && P1_LIVE_REGEX.test(cmd)) {
-      spikesDetected++;
-      const alert = {
-        rule: 5,
-        message: "P1 LIVE: dangerous file-discovery command detected.",
-        tokens: 0,
-        timestamp: ts,
-      };
-      process.stderr.write("CTG ALERT: " + alert.message + "\n");
-      if (onSpike) onSpike(alert);
+    const toolUse = line.message?.content?.find(c => c.type === 'tool_use');
+    const cmd = toolUse?.input?.command || '';
+    const toolName = toolUse?.name || 'Bash';
+    if (cmd && /\b(cat\s+[~\/]|grep\s+-[a-zA-Z]*r[a-zA-Z]*\s+[~\/]|ls\s+-[a-zA-Z]*\s+[~\/])/i.test(cmd)) {
+      const preview = cmd.length > 80 ? cmd.substring(0, 80) + '...' : cmd;
+      const msg = `P1 LIVE [${toolName}]: dangerous file-discovery command detected.\n  CMD: ${preview}`;
+      opts.onSpike?.({ rule: 5, message: msg, tokens: 0, timestamp: Date.now() });
+      console.error('CTG ALERT:', msg);
     }
 
     // ── Rule 6 — P10 correction loop ──────────────────────────────────
@@ -165,9 +193,10 @@ function startMonitor(opts = {}) {
         if (userMsgWindow.includes(norm)) {
           correctionLoopsDetected++;
           const count = userMsgWindow.filter((m) => m === norm).length + 1;
+          const normalizedText = norm;
           const alert = {
             rule: 6,
-            message: `P10 CORRECTION LOOP: same instruction seen ${count} times. Run /clear and rewrite the initial prompt.`,
+            message: `P10 CORRECTION LOOP: same instruction seen ${count} times.\n  PROMPT: "${normalizedText.substring(0, 60)}..."\n  → Run /clear and rewrite the initial prompt.`,
             tokens: 0,
             timestamp: ts,
           };
@@ -198,17 +227,19 @@ function startMonitor(opts = {}) {
       if (turnTokens > SPIKE_TURN_THRESHOLD) {
         fireAlert({
           rule: 1,
-          message: `SPIKE: turn used ${Math.round(turnTokens / 1000)}k tokens`,
+          message: `SPIKE Rule 1: turn used ${(tokensThisTurn/1000).toFixed(1)}k tokens`,
           tokens: turnTokens,
           timestamp: ts,
         });
       }
 
-      // Rule 2 — Session total
-      if (sessionTotal > SPIKE_SESSION_THRESHOLD) {
+      // Rule 2 — Session total (milestone-based, fires every 100k above 1M)
+      const milestone = Math.floor(sessionTotal / 100_000) * 100_000;
+      if (milestone > lastMilestoneReported && milestone >= 1_000_000) {
+        lastMilestoneReported = milestone;
         fireAlert({
           rule: 2,
-          message: `SESSION crossed 1M tokens (total: ${Math.round(sessionTotal / 1000)}k)`,
+          message: `SESSION crossed ${(milestone/1_000_000).toFixed(1)}M tokens total`,
           tokens: sessionTotal,
           timestamp: ts,
         });
@@ -222,7 +253,7 @@ function startMonitor(opts = {}) {
         if (avg > SPIKE_TREND_THRESHOLD) {
           fireAlert({
             rule: 3,
-            message: `TREND: 3-turn avg ${Math.round(avg / 1000)}k tokens`,
+            message: `TREND: 3-turn avg ${(avg/1000).toFixed(1)}k tokens — context growing fast`,
             tokens: avg,
             timestamp: ts,
           });
@@ -230,11 +261,10 @@ function startMonitor(opts = {}) {
       }
 
       // Rule 4 — Cache miss on large turn
-      const cacheRead = usage.cache_read_input_tokens || 0;
-      if (cacheRead === 0 && turnTokens > CACHE_MISS_THRESHOLD) {
+      if ((u.cache_read_input_tokens||0)===0 && t>50_000) {
         fireAlert({
           rule: 4,
-          message: `CACHE MISS: large turn (${Math.round(turnTokens / 1000)}k tokens) with no cache reads`,
+          message: `CACHE MISS on large turn (${(tokensThisTurn/1000).toFixed(1)}k tokens) — prompt caching not active`,
           tokens: turnTokens,
           timestamp: ts,
         });
@@ -303,12 +333,53 @@ function startMonitor(opts = {}) {
   // Read any existing content first
   if (lastByteOffset === 0) readNewBytes();
 
-  fs.watchFile(sessionFile, { interval: 1000 }, () => {
-    readNewBytes();
-  });
+  function pollFile() {
+    try {
+      const stat = fs.statSync(sessionFile);
+      if (stat.size <= lastByteOffset) return;
+      const fd = fs.openSync(sessionFile, 'r');
+      const newBytes = stat.size - lastByteOffset;
+      const buf = Buffer.alloc(newBytes);
+      fs.readSync(fd, buf, 0, newBytes, lastByteOffset);
+      fs.closeSync(fd);
+      lastByteOffset = stat.size;
+      const lines = buf.toString('utf8').split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        try { processLine(JSON.parse(line)); } catch(e) {}
+      }
+    } catch(e) {}
+  }
+  console.log('CTG: watching', sessionFile);
+  const _pollInterval = setInterval(pollFile, 500);
+
+  // Session change watcher — runs every 3 seconds
+  const _sessionWatcher = setInterval(() => {
+    if (process.env.CTG_TRANSCRIPT_PATH || opts.sessionFile) return;
+    const latest = getMostRecentSessionFile(opts.dir || process.cwd());
+    if (latest && latest !== sessionFile) {
+      sessionFile = latest;
+      lastByteOffset = 0;
+      sessionTotal = 0;
+      turnCount = 0;
+      lastMilestoneReported = 0;
+
+      console.log('\n─────────────────────────────────────');
+      console.log(`CTG: /clear detected — new session started`);
+      console.log(`CTG: watching ${sessionFile}`);
+      console.log('─────────────────────────────────────\n');
+
+      opts.onSpike?.({
+        rule: 0,
+        type: 'session-reset',
+        sessionFile: sessionFile,
+        timestamp: Date.now()
+      });
+    }
+  }, 3000);
 
   function stop() {
-    fs.unwatchFile(sessionFile);
+    clearInterval(_pollInterval);
+    clearInterval(_sessionWatcher);
     appendHistory(
       {
         date: new Date().toISOString(),

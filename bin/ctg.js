@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 
+const os   = require('os');
+const path = require('path');
+
 const args = process.argv.slice(2);
 
 // --version
@@ -20,6 +23,7 @@ Subcommands:
   fix         Apply auto-fixes for detected anti-patterns
   watch       Monitor session JSONL for runtime patterns
   dashboard   Display token usage summary
+  test        Run anti-pattern scenarios against a temp session file for testing
 
 Flags:
   --auto              Run all fixers without prompting
@@ -29,6 +33,8 @@ Flags:
   --dry-run           Preview changes, write nothing
   --mcp-threshold=N   P8 server count threshold (default: 3)
   --no-history        Skip writing to ~/.ctg/sessions/history.jsonl
+  --scenario=<ids>    Scenarios to run: all|r1|r2|r3|r4|r5|r6 (comma-separated, default: all)
+  --delay=<ms>        Delay between written entries in ms (default: 600)
   --version           Print version and exit
   --help              Print this usage summary and exit
 `.trim());
@@ -38,7 +44,11 @@ Flags:
 const subcommand = args[0];
 
 const dirFlag = args.find(a => a.startsWith('--dir='));
-const targetDir = (dirFlag ? dirFlag.split('=')[1] : null) || process.cwd();
+let targetDir = (dirFlag ? dirFlag.split('=')[1] : null) || process.cwd();
+// Expand ~ to home directory (fs does not do this automatically)
+if (targetDir.startsWith('~/') || targetDir === '~') {
+  targetDir = path.join(os.homedir(), targetDir.slice(2));
+}
 
 const mcpFlag = args.find(a => a.startsWith('--mcp-threshold='));
 const mcpThreshold = mcpFlag ? parseInt(mcpFlag.split('=')[1], 10) : 3;
@@ -51,7 +61,7 @@ const flags = {
   noHistory: args.includes('--no-history'),
 };
 
-const SUBCOMMANDS = ['audit', 'fix', 'watch', 'dashboard'];
+const SUBCOMMANDS = ['audit', 'fix', 'watch', 'dashboard', 'test'];
 
 if (!subcommand || !SUBCOMMANDS.includes(subcommand)) {
   console.error(`Unknown or missing subcommand: ${subcommand || '(none)'}`);
@@ -90,7 +100,7 @@ if (subcommand === 'audit') {
 if (subcommand === 'fix') {
   const { runAudit } = require('../src/audit');
   const { printReport } = require('../src/reporter');
-  const { injectClaudeMd, installHooks, updateSettings, createClaudeIgnore, resetClaudeMd } = require('../src/fixer');
+  const { injectClaudeMd, installHooks, updateSettings, createClaudeIgnore, resetClaudeMd, injectStableContext } = require('../src/fixer');
 
   // --reset: strip injected block only
   if (reset) {
@@ -105,11 +115,15 @@ if (subcommand === 'fix') {
     const r2 = installHooks(targetDir, opts);
     const r3 = updateSettings(targetDir, opts);
     const r4 = createClaudeIgnore(targetDir, opts);
+    // P5 — stable-context section
+    const claudeMdPath = require('path').join(targetDir, 'CLAUDE.md');
+    const r5 = injectStableContext(claudeMdPath, opts);
     console.log('[1]', r1.action, r1.language || '');
     console.log('[2]', r2.action, r2.reason || '');
     console.log('[3]', r3.action);
     console.log('[P7 FIX]', r4.action, `added:${r4.added || 0} skipped:${r4.skipped || 0}`);
-    return { r1, r2, r3, r4 };
+    console.log('[P5 FIX] stable-context section', r5.action);
+    return { r1, r2, r3, r4, r5 };
   }
 
   // --auto: apply immediately
@@ -153,6 +167,11 @@ if (subcommand === 'watch') {
   console.log('P10 correction loop detection active (min 30 chars)');
   console.log('Ctrl+C to stop');
   startMonitor({ dir: targetDir, notify: flags.notify, noHistory: flags.noHistory });
+}
+
+// ── test ──────────────────────────────────────────────────────────────────
+if (subcommand === 'test') {
+  require('./test-scenarios.js');
 }
 
 // ── dashboard ─────────────────────────────────────────────────────────────

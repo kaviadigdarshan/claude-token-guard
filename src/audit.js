@@ -3,7 +3,12 @@
 const fs = require("fs");
 const path = require("path");
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "coverage", ".next", "dist", "build"]);
+const SKIP_DIRS = new Set([
+  "node_modules", ".git", "coverage", ".next", "dist", "build",
+  ".venv", "venv", "__pycache__", "site-packages",
+  ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+  "fixtures", "__tests__", "test", "tests", "examples", "docs/examples",
+]);
 
 const P1_REGEX = /\b(cat\s+[~\/]|grep\s+-[a-zA-Z]*r[a-zA-Z]*\s|ls\s+[~\/]|##\s+STEP\s+\d+:\s+READ)/i;
 const P4_SECTION_REGEX = /^##\s+(checklist|todo|verify|steps)/i;
@@ -103,14 +108,35 @@ function runAudit(targetDir, opts = {}) {
   if (claudeMdPath && !scannedFiles.includes(claudeMdPath)) scannedFiles.push(claudeMdPath);
 
   // ── P1 ──────────────────────────────────────────────────────────────────
+  const p1ExemptHeading = /bad|avoid|anti-pattern|example|don't|detected/i;
   const p1Occurrences = [];
   for (const file of mdFiles) {
+    // Skip fixture/methodology documentation files entirely
+    const normalizedFilePath = file.replace(/\\/g, "/");
+    if (/fixture|METHODOLOGY/i.test(normalizedFilePath)) continue;
+
     const content = readFileSafe(file);
     if (!content) continue;
     const lines = content.split("\n");
     for (let i = 0; i < lines.length; i++) {
-      if (P1_REGEX.test(lines[i])) {
-        p1Occurrences.push({ file, line: i + 1, text: lines[i] });
+      if (!P1_REGEX.test(lines[i])) continue;
+      // Check if any heading within the preceding 5 lines marks this as documentation
+      let exempt = false;
+      for (let j = Math.max(0, i - 5); j < i; j++) {
+        if (/^#+\s/.test(lines[j]) && p1ExemptHeading.test(lines[j])) {
+          exempt = true;
+          break;
+        }
+      }
+      if (!exempt) {
+        const NEGATION_PHRASES = [
+          /never use/i, /do not use/i, /don't use/i, /avoid/i,
+          /not allowed/i, /prohibited/i
+        ];
+        const isNegated = NEGATION_PHRASES.some(re => re.test(lines[i]));
+        if (!isNegated) {
+          p1Occurrences.push({ file, line: i + 1, text: lines[i] });
+        }
       }
     }
   }
@@ -212,7 +238,11 @@ function runAudit(targetDir, opts = {}) {
   if (claudeIgnorePresent) {
     const ignoreContent = readFileSafe(ignoreFilePath) || "";
     const ignoreLines = new Set(ignoreContent.split("\n").map(l => l.trim()).filter(Boolean));
-    requiredEntriesMissing = REQUIRED_IGNORE_ENTRIES.filter(entry => !ignoreLines.has(entry));
+    // Normalize both sides — strip trailing slash before comparing
+    const normalizedLines = new Set([...ignoreLines].map(l => l.replace(/\/$/, '')));
+    requiredEntriesMissing = REQUIRED_IGNORE_ENTRIES.filter(entry =>
+      !normalizedLines.has(entry.replace(/\/$/, ''))
+    );
   } else {
     requiredEntriesMissing = [...REQUIRED_IGNORE_ENTRIES];
   }
@@ -303,15 +333,9 @@ function checkStopHookInstalled(settingsJson) {
     return false;
   }
   for (const entry of settingsJson.hooks.Stop) {
-    if (typeof entry.command === "string" && entry.command.includes("turn-counter")) {
+    if (Array.isArray(entry.hooks) && entry.hooks[0] &&
+        typeof entry.hooks[0].command === "string" && entry.hooks[0].command.includes("turn-counter")) {
       return true;
-    }
-    if (Array.isArray(entry.hooks)) {
-      for (const h of entry.hooks) {
-        if (typeof h.command === "string" && h.command.includes("turn-counter")) {
-          return true;
-        }
-      }
     }
   }
   return false;

@@ -64,36 +64,67 @@ function resetClaudeMd(targetDir) {
 
 function installHooks(targetDir, opts = { dryRun: false }) {
   if (process.platform === 'win32') {
-    return { action: 'skipped', reason: 'windows — hooks require WSL or Git Bash', files: [] };
+    return { action: 'skipped', reason: 'windows — hooks require WSL or Git Bash' };
   }
 
-  const destDir = path.join(targetDir, '.claude', 'hooks');
-  const hookFiles = ['turn-counter.sh', 'session-start.sh'];
-  const installedFiles = [];
+  const hooksDir = path.join(targetDir, '.claude', 'hooks');
+  const turnCounterPath = path.join(hooksDir, 'turn-counter.sh');
+  const sessionStartPath = path.join(hooksDir, 'session-start.sh');
 
-  if (!opts.dryRun) {
-    fs.mkdirSync(destDir, { recursive: true });
+  const TURN_COUNTER = `#!/usr/bin/env bash
+set -euo pipefail
+PAYLOAD=$(cat)
+SESSION_ID=$(printf '%s' "$PAYLOAD" | node -e \\
+  "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.stdout.write(JSON.parse(d).session_id||'')}catch{}})" 2>/dev/null)
+if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
+  echo 'CTG WARN: session_id extraction failed, using shared counter' >&2
+  SESSION_ID='default'
+fi
+THRESHOLD=\${CLAUDE_TURN_THRESHOLD:-30}
+SESSION_FILE="\${TMPDIR:-/tmp}/ctg-turns-\${SESSION_ID}"
+CURRENT=$(( $(cat "$SESSION_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$CURRENT" > "$SESSION_FILE"
+if [ "$CURRENT" -eq "$THRESHOLD" ]; then
+  echo "TOKEN GUARD: Turn \${CURRENT} reached. Run /clear before your next task." >&2
+fi
+if [ "$CURRENT" -gt "$(($THRESHOLD + 5))" ]; then
+  echo "TOKEN GUARD: Turn \${CURRENT} — context filling up. Run /clear NOW." >&2
+fi
+`;
 
-    for (const file of hookFiles) {
-      const src = path.join(HOOKS_SRC_DIR, file);
-      const dest = path.join(destDir, file);
-      fs.copyFileSync(src, dest);
-      fs.chmodSync(dest, 0o755);
-      installedFiles.push(dest);
-    }
-  } else {
-    for (const file of hookFiles) {
-      installedFiles.push(path.join(destDir, file));
-    }
+  const SESSION_START = `#!/usr/bin/env bash
+set -euo pipefail
+PAYLOAD=$(cat)
+SESSION_ID=$(printf '%s' "$PAYLOAD" | node -e \\
+  "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.stdout.write(JSON.parse(d).session_id||'')}catch{}})" 2>/dev/null)
+if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
+  echo 'CTG WARN: session_id extraction failed, using shared counter' >&2
+  SESSION_ID='default'
+fi
+SOURCE=$(printf '%s' "$PAYLOAD" | node -e \\
+  "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.stdout.write(JSON.parse(d).source||'')}catch{}})" 2>/dev/null)
+SESSION_FILE="\${TMPDIR:-/tmp}/ctg-turns-\${SESSION_ID}"
+if [ "$SOURCE" = 'startup' ] || [ "$SOURCE" = 'clear' ]; then
+  rm -f "$SESSION_FILE"
+fi
+`;
+
+  if (opts.dryRun) {
+    return { action: 'would-install', files: [turnCounterPath, sessionStartPath] };
   }
 
-  return { action: 'installed', files: installedFiles };
+  fs.mkdirSync(hooksDir, { recursive: true });
+  fs.writeFileSync(turnCounterPath, TURN_COUNTER, { mode: 0o755 });
+  fs.writeFileSync(sessionStartPath, SESSION_START, { mode: 0o755 });
+
+  return { action: 'installed', files: [turnCounterPath, sessionStartPath] };
 }
 
 function updateSettings(targetDir, opts = { dryRun: false }) {
   const settingsPath = path.join(targetDir, '.claude', 'settings.json');
-  const turnCounterCmd = path.join('.claude', 'hooks', 'turn-counter.sh');
-  const sessionStartCmd = path.join('.claude', 'hooks', 'session-start.sh');
+  const hooksDir = path.resolve(targetDir, '.claude', 'hooks');
+  const turnCounterCmd = path.join(hooksDir, 'turn-counter.sh');
+  const sessionStartCmd = path.join(hooksDir, 'session-start.sh');
 
   let settings = {};
   if (fs.existsSync(settingsPath)) {
@@ -102,26 +133,47 @@ function updateSettings(targetDir, opts = { dryRun: false }) {
 
   if (!settings.hooks) settings.hooks = {};
 
-  function hasCommand(entries, cmd) {
-    if (!Array.isArray(entries)) return false;
-    return entries.some(e => (typeof e === 'string' ? e : e.command) === cmd);
+  function isBareOld(entry, ...keywords) {
+    return typeof entry.command === 'string' &&
+      !Array.isArray(entry.hooks) &&
+      keywords.some(k => entry.command.includes(k));
   }
 
-  const stopAlready = hasCommand(settings.hooks.Stop, turnCounterCmd);
-  const startAlready = hasCommand(settings.hooks.SessionStart, sessionStartCmd);
+  function hasCorrect(entries, cmd) {
+    if (!Array.isArray(entries)) return false;
+    return entries.some(e =>
+      Array.isArray(e.hooks) && e.hooks[0] && e.hooks[0].command === cmd
+    );
+  }
 
-  if (stopAlready && startAlready) {
+  function cleanAndCheck(hookArray, cmd, keywords) {
+    if (!Array.isArray(hookArray)) return { arr: [], already: false };
+    const arr = hookArray.filter(e => !isBareOld(e, ...keywords));
+    const already = arr.some(e =>
+      Array.isArray(e.hooks) && e.hooks[0] && e.hooks[0].command === cmd
+    );
+    return { arr, already };
+  }
+
+  const { arr: stopArr, already: stopAlready } =
+    cleanAndCheck(settings.hooks.Stop, turnCounterCmd, ['turn-counter', 'session-start']);
+  const { arr: startArr, already: startAlready } =
+    cleanAndCheck(settings.hooks.SessionStart, sessionStartCmd, ['turn-counter', 'session-start']);
+
+  if (stopAlready && startAlready &&
+      stopArr.length === (settings.hooks.Stop || []).length &&
+      startArr.length === (settings.hooks.SessionStart || []).length) {
     return { action: 'already-configured' };
   }
 
+  settings.hooks.Stop = stopArr;
   if (!stopAlready) {
-    if (!Array.isArray(settings.hooks.Stop)) settings.hooks.Stop = [];
-    settings.hooks.Stop.push({ command: turnCounterCmd });
+    settings.hooks.Stop.push({ matcher: '', hooks: [{ type: 'command', command: turnCounterCmd }] });
   }
 
+  settings.hooks.SessionStart = startArr;
   if (!startAlready) {
-    if (!Array.isArray(settings.hooks.SessionStart)) settings.hooks.SessionStart = [];
-    settings.hooks.SessionStart.push({ command: sessionStartCmd });
+    settings.hooks.SessionStart.push({ matcher: '', hooks: [{ type: 'command', command: sessionStartCmd }] });
   }
 
   if (!opts.dryRun) {
@@ -133,78 +185,75 @@ function updateSettings(targetDir, opts = { dryRun: false }) {
 }
 
 function createClaudeIgnore(targetDir, opts = { dryRun: false }) {
-  const claudeIgnorePath = path.join(targetDir, '.claudeignore');
-  const gitIgnorePath = path.join(targetDir, '.gitignore');
-  const templatePath = path.join(TEMPLATES_DIR, 'default-claudeignore');
+  const REQUIRED = [
+    'node_modules/', 'dist/', '.git/', 'build/', 'coverage/', '*.log',
+    '.venv/', '__pycache__/', '.env', '*.key', '*.pem'
+  ];
 
-  function parseEntries(content) {
-    return content
-      .split('\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('#'));
+  const filePath = path.join(targetDir, '.claudeignore');
+  const existing = fs.existsSync(filePath)
+    ? fs.readFileSync(filePath, 'utf8') : '';
+
+  // Check each required entry — match with and without trailing slash
+  const missing = REQUIRED.filter(entry => {
+    const base = entry.replace(/\/$/, '');
+    return !existing.includes(entry) && !existing.includes(base);
+  });
+
+  if (missing.length === 0) {
+    console.log('[P7 FIX] all required entries already present');
+    return { action: 'skipped', added: 0, skipped: REQUIRED.length };
   }
 
-  function normalizeEntry(e) {
-    return e.replace(/\/$/, '');
+  if (opts.dryRun) {
+    console.log(`[P7 FIX] would add: ${missing.join(', ')}`);
+    return { action: 'would-add', missing };
   }
 
-  const gitignoreEntries = fs.existsSync(gitIgnorePath)
-    ? new Set(parseEntries(fs.readFileSync(gitIgnorePath, 'utf8')).map(normalizeEntry))
-    : new Set();
-
-  if (!fs.existsSync(claudeIgnorePath)) {
-    const templateContent = fs.readFileSync(templatePath, 'utf8');
-    const templateLines = templateContent.split('\n');
-
-    const filteredLines = [];
-    let skipped = 0;
-
-    for (const line of templateLines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#') && gitignoreEntries.has(normalizeEntry(trimmed))) {
-        skipped++;
-      } else {
-        filteredLines.push(line);
-      }
-    }
-
-    const written = filteredLines.filter(l => { const t = l.trim(); return t && !t.startsWith('#'); }).length;
-    const preview = filteredLines.join('\n');
-
-    process.stdout.write(`[P7 FIX] ${written} entries written (${skipped} skipped — already in .gitignore)\n`);
-
-    if (opts.dryRun) {
-      return { action: 'would-create', preview, skipped };
-    }
-
-    fs.writeFileSync(claudeIgnorePath, preview, 'utf8');
-    return { action: 'created', added: written, skipped };
-  } else {
-    const existing = fs.readFileSync(claudeIgnorePath, 'utf8');
-    const existingEntries = new Set(parseEntries(existing).map(normalizeEntry));
-    const required = ['node_modules', 'dist', '.git', 'build'];
-
-    const missing = required.filter(
-      e => !existingEntries.has(e) && !gitignoreEntries.has(e)
-    );
-
-    if (missing.length === 0) {
-      process.stdout.write(`[P7 FIX] 0 entries added (${required.length} skipped — already in .gitignore)\n`);
-      return { action: 'skipped', added: 0, skipped: required.length };
-    }
-
-    const toAppend = '\n# Added by claude-token-guard\n' + missing.join('\n') + '\n';
-    const skipped = required.length - missing.length;
-
-    process.stdout.write(`[P7 FIX] ${missing.length} entries added (${skipped} skipped — already in .gitignore)\n`);
-
-    if (opts.dryRun) {
-      return { action: 'would-append', preview: toAppend, skipped };
-    }
-
-    fs.appendFileSync(claudeIgnorePath, toAppend, 'utf8');
-    return { action: 'appended', added: missing.length, skipped };
-  }
+  const toAppend = '\n# Added by claude-token-guard\n' +
+    missing.join('\n') + '\n';
+  fs.appendFileSync(filePath, toAppend);
+  console.log(`[P7 FIX] added ${missing.length} entries: ${missing.join(', ')}`);
+  return { action: 'added', added: missing.length, skipped: 0 };
 }
 
-module.exports = { injectClaudeMd, resetClaudeMd, installHooks, updateSettings, createClaudeIgnore };
+function injectStableContext(claudeMdPath, opts = {}) {
+  const content = fs.existsSync(claudeMdPath)
+    ? fs.readFileSync(claudeMdPath, 'utf8') : '';
+
+  if (content.includes('<!-- stable-context') ||
+      content.includes('## Stable Context')) {
+    return { action: 'skipped', reason: 'already present' };
+  }
+
+  const section = `
+## Stable Context
+
+<!-- stable-context: do not remove this section -->
+### Project
+This is **claude-token-guard** — a CLI tool that audits Claude Code projects
+for token hygiene anti-patterns and provides real-time monitoring via
+\`ctg watch\` and \`ctg dashboard\`.
+
+### Key Commands
+- \`ctg audit\` — scan for anti-patterns
+- \`ctg fix --auto\` — apply all safe fixes
+- \`ctg watch\` — live token monitoring (terminal)
+- \`ctg dashboard\` — live browser dashboard
+- \`ctg test\` — run anti-pattern test scenarios
+
+### Architecture
+- \`bin/ctg.js\` — CLI entry point
+- \`src/audit.js\` — pattern detection (P1–P10)
+- \`src/fixer.js\` — auto-fix implementations
+- \`src/monitor.js\` — JSONL tail + spike detection
+- \`src/dashboard.js\` — SSE server + browser UI
+- \`src/reporter.js\` — formatted audit output
+`;
+
+  if (opts.dryRun) return { action: 'would-add' };
+  fs.writeFileSync(claudeMdPath, content + section);
+  return { action: 'added' };
+}
+
+module.exports = { injectClaudeMd, resetClaudeMd, installHooks, updateSettings, createClaudeIgnore, injectStableContext };

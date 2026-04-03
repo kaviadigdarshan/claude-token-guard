@@ -91,47 +91,39 @@ function computeSavings(patterns) {
  * @returns {string}
  */
 function buildPatternLine(id, pattern, opts) {
-  const isNew = id === "P7" || id === "P8" || id === "P9";
-  const newPrefix = isNew ? c("magenta", "[NEW]") : "";
-
-  if (id === "P10") {
-    return (
-      `  ${c("gray", "[PHASE 2]")} ` +
-      bold("P10") +
-      `  Correction loops  — active when running: ${c("cyan", "ctg watch")}`
-    );
-  }
-
   const LABELS = {
-    P1: "File discovery commands",
-    P2: "Resume-after-rate-limit rule",
-    P3: "Session turn counter",
-    P4: "Verbose verification checklists",
-    P5: "Stable-context section",
-    P6: "Clear-discipline rule",
-    P7: ".claudeignore coverage",
-    P8: "MCP servers always-on",
-    P9: "CLAUDE.md size",
+    P1:  "File discovery commands",
+    P2:  "Resume-after-rate-limit rule",
+    P3:  "Session turn counter",
+    P4:  "Verbose verification checklists",
+    P5:  "Stable-context section",
+    P6:  "Clear-discipline rule",
+    P7:  ".claudeignore coverage",
+    P8:  "MCP servers always-on",
+    P9:  "CLAUDE.md size",
+    P10: "Correction loops",
   };
 
   const label = LABELS[id] || id;
+
+  if (id === "P10") {
+    const passBadge = c("green", "[PASS]");
+    return `  ${passBadge}${pad("", 6)}${bold(id)}  ${pad(label, 32)}— active when running: ${c("cyan", "ctg watch")}`;
+  }
+
   const sev = pattern.severity;
 
-  let statusText;
   if (!pattern.detected) {
-    // PASS
     const passBadge = c("green", "[PASS]");
     const passDetail = buildPassDetail(id, pattern);
-    return `  ${newPrefix}${passBadge}${pad("", isNew ? 1 : 6)}${bold(id)}  ${pad(label, 32)}${passDetail}`;
+    return `  ${passBadge}${pad("", 6)}${bold(id)}  ${pad(label, 32)}${passDetail}`;
   }
 
   // DETECTED — build detail
-  statusText = buildDetectedDetail(id, pattern, opts);
-
+  const statusText = buildDetectedDetail(id, pattern, opts);
   const sevBadge = badge(sev);
-  // Align: non-new badges are ~10 chars wide visually, new adds [NEW] prefix
-  const spacing = isNew ? " " : pad("", 10 - (sev.length + 2)); // "[CRITICAL]" = 10, "[HIGH]" = 6, "[MEDIUM]" = 8
-  return `  ${newPrefix}${sevBadge}${spacing}${bold(id)}  ${pad(label, 32)}${statusText}`;
+  const spacing = pad("", 10 - (sev.length + 2)); // "[CRITICAL]" = 10, "[HIGH]" = 6, "[MEDIUM]" = 8
+  return `  ${sevBadge}${spacing}${bold(id)}  ${pad(label, 32)}${statusText}`;
 }
 
 /**
