@@ -8,6 +8,7 @@ const SKIP_DIRS = new Set([
   ".venv", "venv", "__pycache__", "site-packages",
   ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
   "fixtures", "__tests__", "test", "tests", "examples", "docs/examples",
+  "plugins", "cache",
 ]);
 
 const P1_REGEX = /\b(cat\s+[~\/]|grep\s+-[a-zA-Z]*r[a-zA-Z]*\s|ls\s+[~\/]|##\s+STEP\s+\d+:\s+READ)/i;
@@ -21,11 +22,12 @@ const REQUIRED_IGNORE_ENTRIES = ["node_modules", "dist", ".git", "build", "*.log
 /**
  * Walk directory recursively, returning paths of all .md files.
  * @param {string} dir
+ * @param {Set<string>} skipDirs
  * @param {number} depth
  * @param {{ n: number }} fileCount
  * @returns {string[]}
  */
-function walkMd(dir, depth = 0, fileCount = { n: 0 }) {
+function walkMd(dir, skipDirs = SKIP_DIRS, depth = 0, fileCount = { n: 0 }) {
   if (depth > 8) {
     console.warn("CTG: walkMd maxDepth:", dir);
     return [];
@@ -45,8 +47,8 @@ function walkMd(dir, depth = 0, fileCount = { n: 0 }) {
   const results = [];
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      const sub = walkMd(path.join(dir, entry.name), depth + 1, fileCount);
+      if (skipDirs.has(entry.name)) continue;
+      const sub = walkMd(path.join(dir, entry.name), skipDirs, depth + 1, fileCount);
       results.push(...sub);
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       fileCount.n++;
@@ -87,6 +89,26 @@ function parseJsonSafe(text) {
 }
 
 /**
+ * Build the set of directory names to skip during walkMd.
+ * Starts from SKIP_DIRS and adds plain directory-name entries from .claudeignore.
+ * @param {string} targetDir
+ * @returns {Set<string>}
+ */
+function buildSkipDirs(targetDir) {
+  const skip = new Set(SKIP_DIRS);
+  const ignoreContent = readFileSafe(path.join(targetDir, ".claudeignore"));
+  if (!ignoreContent) return skip;
+  for (const raw of ignoreContent.split("\n")) {
+    const entry = raw.replace(/#.*$/, "").trim().replace(/\/$/, "");
+    // Only plain directory names: no glob characters, no dots, no path separators
+    if (entry && !/[*?.\\/]/.test(entry)) {
+      skip.add(entry);
+    }
+  }
+  return skip;
+}
+
+/**
  * Main audit function.
  * @param {string} targetDir
  * @param {{ mcpThreshold?: number }} opts
@@ -103,7 +125,8 @@ function runAudit(targetDir, opts = {}) {
   const settingsContent = settingsPath ? readFileSafe(settingsPath) : null;
   const settingsJson = settingsContent ? parseJsonSafe(settingsContent) : null;
 
-  const mdFiles = walkMd(targetDir);
+  const walkSkipDirs = buildSkipDirs(targetDir);
+  const mdFiles = walkMd(targetDir, walkSkipDirs);
   const scannedFiles = [...mdFiles];
   if (claudeMdPath && !scannedFiles.includes(claudeMdPath)) scannedFiles.push(claudeMdPath);
 
